@@ -1,0 +1,114 @@
+/* 活动栏（图标条）。
+ *
+ * 图标条注入在侧栏根里，但绝对定位到**侧栏列最左一条**：侧栏列与侧栏根都是 static，
+ * 定位上下文因此是 .frame（position: relative）。这一点决定了收起态必须先隐藏图标条 ——
+ * .sidebarCol 的 overflow: hidden 裁不到「包含块在它之外」的绝对定位元素，侧栏滑走时
+ * 图标条会留在原地压在会话区上。引擎在收起时撤掉宽态属性，下面的 display: none 立即生效。
+ *
+ * 选择器说明：所有针对外壳节点的规则都用属性选择器（CSS Modules 不会改写属性选择器），
+ * 只有本包自己的类名走 css.* 映射。
+ */
+
+/* 宽态：给图标条腾出左侧内边距（侧栏根是 border-box，宽度由外壳内联给出，
+   所以内边距吃掉的是内容宽度，不会撑破栅格列）。 */
+[data-slot='sidebar'] [data-dsh-activity-bar-wide] {
+  padding-left: calc(var(--dsh-sidebar-inline-padding, 12px) + var(--dsh-activity-bar-width, 44px));
+}
+
+/* 宽态时入口都在图标条里：官方面板行与插件注入行让位（收起态它们仍是竖条的图标）。 */
+[data-slot='sidebar'] [data-dsh-activity-bar-wide] nav[class*='panelList']:not([data-dsh-activity-bar]),
+[data-slot='sidebar'] [data-dsh-activity-bar-wide] [data-dsh-part='sidebar-entry'] {
+  display: none;
+}
+
+/* 自定义视图只在宽态生效：收起成 56px 竖条时让外壳自己的内容照常显示，视图选择保留，
+   再展开时回到原来那个视图。槽锚点带内联 display: contents，必须 !important。 */
+[data-slot='sidebar'] [data-dsh-activity-bar-wide][data-dsh-activity-bar-view] [data-slot='sidebar.workspaces'] {
+  display: none !important;
+}
+
+/* 图标条本体：默认隐藏，只有宽态显示。宽度可被主题覆盖（皮肤可以调窄调宽）。 */
+.strip {
+  position: absolute;
+  top: var(--dsh-windows-titlebar-height, 0px);
+  left: 0;
+  bottom: 0;
+  width: var(--dsh-activity-bar-width, 44px);
+  box-sizing: border-box;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  margin: 0;
+  list-style: none;
+  z-index: 12;
+}
+
+[data-slot='sidebar'] [data-dsh-activity-bar-wide] [data-dsh-activity-bar] {
+  display: flex;
+}
+
+/* 一个图标：36px 命中区，与外壳竖条的 36px 控件同规格。 */
+.item {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+  transition: background-color 120ms var(--ds-ease-in-out, ease), color 120ms var(--ds-ease-in-out, ease);
+}
+
+.item:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.item:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: -2px;
+}
+
+.item[data-active='true'] {
+  background: var(--dsw-alias-interactive-bg-active);
+  color: var(--dsw-alias-label-primary);
+}
+
+/* 选中指示条：贴侧栏左缘的一条竖线（VS Code 的活动栏指示条）。 */
+.item[data-active='true']::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--dsw-alias-brand-primary);
+}
+
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 自定义视图容器：注入在工作区区域里，只在视图激活时占位。 */
+.viewHost {
+  display: none;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+[data-slot='sidebar'] [data-dsh-activity-bar-wide][data-dsh-activity-bar-view] [data-dsh-activity-bar-view-host] {
+  display: flex;
+  flex-direction: column;
+}

@@ -1,0 +1,12 @@
+# 依赖与构建产物
+node_modules/
+lib/
+*.tsbuildinfo
+
+# 本地运行残留
+.vitest-out.log
+.vitest-err.log
+.smoke-out.log
+.smoke-err.log
+.t-out.log
+.t-err.log

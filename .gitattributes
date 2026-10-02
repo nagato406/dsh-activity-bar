@@ -1,0 +1,20 @@
+# 仓库内一律 LF：源文件、README 与配置都以 LF 写入索引，
+# 避免 Windows 检出的 CRLF 让 blob hash 随平台变化。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.zip binary
+*.tgz binary
+*.exe binary
+*.dll binary
+*.node binary

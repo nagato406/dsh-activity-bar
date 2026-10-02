@@ -1,0 +1,8 @@
+# bundle patch for the dsh-activity-bar plugin: inserts its plugin row into the web
+# profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field); install with
+# `dsh plugin --profile web add link:<this repository>`
+# (or point the desktop app's Plugins page at this directory).
+- insert:
+    - id: activity-bar
+      name: '@linxin666/dsh-activity-bar'
