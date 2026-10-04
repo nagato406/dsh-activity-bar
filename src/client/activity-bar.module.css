@@ -1,52 +1,80 @@
 /* 活动栏（图标条）。
  *
- * 图标条注入在侧栏根里，但绝对定位到**侧栏列最左一条**：侧栏列与侧栏根都是 static，
- * 定位上下文因此是 .frame（position: relative）。这一点决定了收起态必须先隐藏图标条 ——
- * .sidebarCol 的 overflow: hidden 裁不到「包含块在它之外」的绝对定位元素，侧栏滑走时
- * 图标条会留在原地压在会话区上。引擎在收起时撤掉宽态属性，下面的 display: none 立即生效。
+ * 图标条是 AppFrame（三列栅格）的子节点，绝对定位在它最左一条带上；带子本身由宿主
+ * 容器的 padding-left 让出来，于是侧栏列、会话区、右栏整体右移，图标条与侧栏抽屉是
+ * 两个独立容器：收起抽屉时列宽归零、图标条留在原地。挂载点与理由见
+ * activity-bar-core.ts 的模块注释。
+ *
+ * 绝对定位的包含块是宿主的 padding 边（边框内侧），所以 left: 0 就是画面最左缘，
+ * 外壳给拖拽手柄、覆盖层写的 left/inset 也照旧成立，不需要任何补偿。
  *
  * 选择器说明：所有针对外壳节点的规则都用属性选择器（CSS Modules 不会改写属性选择器），
  * 只有本包自己的类名走 css.* 映射。
  */
 
-/* 宽态：给图标条腾出左侧内边距（侧栏根是 border-box，宽度由外壳内联给出，
-   所以内边距吃掉的是内容宽度，不会撑破栅格列）。 */
-[data-slot='sidebar'] [data-dsh-activity-bar-wide] {
-  padding-left: calc(var(--dsh-sidebar-inline-padding, 12px) + var(--dsh-activity-bar-width, 44px));
+/* 宿主：让出左侧一条带。外壳收起成 0 宽时带子照旧（图标条是唯一导航）；外壳自带 56px
+   竖条时（普通浏览器）带子撤掉，避免两条并排的图标列。 */
+[data-dsh-activity-bar-host]:not([data-dsh-activity-bar-rail]) {
+  padding-left: var(--dsh-activity-bar-width, 44px);
 }
 
-/* 宽态时入口都在图标条里：官方面板行与插件注入行让位（收起态它们仍是竖条的图标）。 */
-[data-slot='sidebar'] [data-dsh-activity-bar-wide] nav[class*='panelList']:not([data-dsh-activity-bar]),
-[data-slot='sidebar'] [data-dsh-activity-bar-wide] [data-dsh-part='sidebar-entry'] {
+/* 图标条顶端让开窗口自己的标题栏（Windows 标题栏模式由 preload 写在 documentElement
+   上）；macOS 桌面把整条栏压到 52px 的红绿灯行下面，与侧栏的顶栏同高。 */
+[data-dsh-activity-bar-host] {
+  --dsh-activity-bar-top: var(--dsh-windows-titlebar-height, 0px);
+}
+
+:global([data-platform='darwin']) [data-dsh-activity-bar-host] {
+  --dsh-activity-bar-top: 52px;
+}
+
+/* 侧栏拖拽手柄的 left 是外壳写的内联值（栅格轨道宽），而绝对定位的 left 从宿主的 padding
+   边 —— 也就是画面左缘 —— 算起。补回图标条那条带，手柄才落回侧栏列的右边缘（-4px 是
+   .handle 自己的居中偏移）。右栏手柄的 left 从右边算，不需要补。 */
+[data-dsh-activity-bar-host]:not([data-dsh-activity-bar-rail]) > [class*='handle'][data-side='sidebar'] {
+  margin-left: calc(var(--dsh-activity-bar-width, 44px) - 4px);
+}
+
+/* 宽态时入口都在图标条里：官方面板行与插件注入行让位（收起态它们仍在外壳的竖条上）。 */
+[data-dsh-activity-bar-wide] [data-slot='sidebar'] nav[class*='panelList']:not([data-dsh-activity-bar]),
+[data-dsh-activity-bar-wide] [data-slot='sidebar'] [data-dsh-part='sidebar-entry'] {
   display: none;
 }
 
-/* 自定义视图只在宽态生效：收起成 56px 竖条时让外壳自己的内容照常显示，视图选择保留，
-   再展开时回到原来那个视图。槽锚点带内联 display: contents，必须 !important。 */
-[data-slot='sidebar'] [data-dsh-activity-bar-wide][data-dsh-activity-bar-view] [data-slot='sidebar.workspaces'] {
+/* 自定义视图占着工作区区域时隐藏官方浏览器（只在宽态：竖条态图标条让位，浏览器得留着
+   当导航）。槽锚点带内联 display: contents，必须 !important。 */
+[data-dsh-activity-bar-host][data-dsh-activity-bar-wide][data-dsh-activity-bar-view] [data-slot='sidebar.workspaces'] {
   display: none !important;
 }
 
-/* 图标条本体：默认隐藏，只有宽态显示。宽度可被主题覆盖（皮肤可以调窄调宽）。 */
+/* 图标条本体。宽度可被主题覆盖（皮肤可以调窄调宽）；底色默认取侧栏填充，引擎会在皮肤
+   把列刷成别的颜色时跟上（见 paintBackdrop）。 */
 .strip {
   position: absolute;
-  top: var(--dsh-windows-titlebar-height, 0px);
+  top: var(--dsh-activity-bar-top, 0px);
   left: 0;
   bottom: 0;
   width: var(--dsh-activity-bar-width, 44px);
   box-sizing: border-box;
-  display: none;
+  display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
   padding: 8px 0;
   margin: 0;
   list-style: none;
+  background: var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-base));
   z-index: 12;
 }
 
-[data-slot='sidebar'] [data-dsh-activity-bar-wide] [data-dsh-activity-bar] {
-  display: flex;
+/* 外壳自带竖条时图标条整体让位（z-index 无关：直接不画）。 */
+[data-dsh-activity-bar-host][data-dsh-activity-bar-rail] > [data-dsh-activity-bar] {
+  display: none;
+}
+
+/* macOS：框架本身透明（窗口 vibrancy 透上来），图标条不铺底色。 */
+:global([data-platform='darwin']) .strip {
+  background: transparent;
 }
 
 /* 一个图标：36px 命中区，与外壳竖条的 36px 控件同规格。 */
@@ -82,7 +110,7 @@
   color: var(--dsw-alias-label-primary);
 }
 
-/* 选中指示条：贴侧栏左缘的一条竖线（VS Code 的活动栏指示条）。 */
+/* 选中指示条：贴画面左缘的一条竖线（VS Code 的活动栏指示条）。 */
 .item[data-active='true']::before {
   content: '';
   position: absolute;
@@ -108,7 +136,7 @@
   overflow: auto;
 }
 
-[data-slot='sidebar'] [data-dsh-activity-bar-wide][data-dsh-activity-bar-view] [data-dsh-activity-bar-view-host] {
+[data-dsh-activity-bar-host][data-dsh-activity-bar-wide][data-dsh-activity-bar-view] [data-dsh-activity-bar-view-host] {
   display: flex;
   flex-direction: column;
 }

@@ -7,7 +7,9 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  HOST_ATTRIBUTE,
   ITEM_ATTRIBUTE,
+  RAIL_ATTRIBUTE,
   STRIP_ATTRIBUTE,
   VIEW_ATTRIBUTE,
   VIEW_HOST_ATTRIBUTE,
@@ -138,15 +140,18 @@ const item = (key: string): HTMLButtonElement => {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  document.documentElement.removeAttribute('data-windows-titlebar')
 })
 
 describe('mountActivityBar', () => {
-  it('把图标条注入成侧栏根的第一个子元素，并镜像侧栏已有入口', () => {
+  it('把图标条注入成 AppFrame 的子节点（与侧栏抽屉平级，不在侧栏里）', () => {
     const shell = buildShell()
     const mounted = mount(shell)
     try {
-      expect(shell.root.firstElementChild).toBe(strip())
-      expect(shell.root.hasAttribute(WIDE_ATTRIBUTE)).toBe(true)
+      expect(strip()?.parentElement).toBe(shell.frame)
+      expect(shell.root.contains(strip())).toBe(false)
+      expect(shell.frame.hasAttribute(HOST_ATTRIBUTE)).toBe(true)
+      expect(shell.frame.hasAttribute(WIDE_ATTRIBUTE)).toBe(true)
       // 内建工作区 + 插件注入行 + 官方面板行，按文档顺序。
       expect(keys()).toEqual([WORKSPACE_VIEW, 'entry:task-board', 'panel:插件'])
       expect(item(WORKSPACE_VIEW).getAttribute('aria-label')).toBe('工作区')
@@ -221,16 +226,50 @@ describe('mountActivityBar', () => {
     }
   })
 
-  it('侧栏收起时让位给外壳自己的竖条（宽态属性撤掉）', async () => {
+  it('收起侧栏时图标条留在原处（Windows 零宽收起没有外壳竖条）', async () => {
+    document.documentElement.setAttribute('data-windows-titlebar', '')
     const shell = buildShell()
     const mounted = mount(shell)
     try {
       shell.frame.setAttribute('data-sidebar-collapsed', '')
       await flush()
-      expect(shell.root.hasAttribute(WIDE_ATTRIBUTE)).toBe(false)
+      expect(shell.frame.hasAttribute(WIDE_ATTRIBUTE)).toBe(false)
+      expect(shell.frame.hasAttribute(RAIL_ATTRIBUTE)).toBe(false)
+      expect(strip()?.parentElement).toBe(shell.frame)
       shell.frame.removeAttribute('data-sidebar-collapsed')
       await flush()
-      expect(shell.root.hasAttribute(WIDE_ATTRIBUTE)).toBe(true)
+      expect(shell.frame.hasAttribute(WIDE_ATTRIBUTE)).toBe(true)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('外壳自带 56px 竖条时图标条让位（浏览器收起态）', async () => {
+    const shell = buildShell()
+    const mounted = mount(shell)
+    try {
+      shell.frame.setAttribute('data-sidebar-collapsed', '')
+      await flush()
+      expect(shell.frame.hasAttribute(RAIL_ATTRIBUTE)).toBe(true)
+      shell.frame.removeAttribute('data-sidebar-collapsed')
+      await flush()
+      expect(shell.frame.hasAttribute(RAIL_ATTRIBUTE)).toBe(false)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('侧栏收起时点注册的视图条目会把侧栏叫回来（视图画在侧栏里）', async () => {
+    document.documentElement.setAttribute('data-windows-titlebar', '')
+    const shell = buildShell()
+    const mounted = mount(shell)
+    try {
+      mounted.bar.register({ id: 'devices', label: () => '设备', kind: 'view', view: 'remote:alpha' })
+      shell.frame.setAttribute('data-sidebar-collapsed', '')
+      await flush()
+      item('devices').click()
+      expect(mounted.toggleSidebar).toHaveBeenCalledTimes(1)
+      expect(mounted.bar.activeView()).toBe('remote:alpha')
     } finally {
       mounted.bar.dispose()
     }
@@ -270,7 +309,7 @@ describe('mountActivityBar', () => {
       item('interconnect:alpha').click()
       await flush()
       expect(mounted.bar.activeView()).toBe('remote:alpha')
-      expect(shell.root.getAttribute(VIEW_ATTRIBUTE)).toBe('remote:alpha')
+      expect(shell.frame.getAttribute(VIEW_ATTRIBUTE)).toBe('remote:alpha')
       expect(mountView).toHaveBeenCalledTimes(1)
       const host = shell.region.querySelector<HTMLElement>(`[${VIEW_HOST_ATTRIBUTE}]`)
       expect(host?.querySelector('[data-remote="alpha"]')).not.toBeNull()
@@ -281,7 +320,7 @@ describe('mountActivityBar', () => {
       await flush()
       expect(disposeView).toHaveBeenCalledTimes(1)
       expect(mounted.bar.activeView()).toBe(WORKSPACE_VIEW)
-      expect(shell.root.hasAttribute(VIEW_ATTRIBUTE)).toBe(false)
+      expect(shell.frame.hasAttribute(VIEW_ATTRIBUTE)).toBe(false)
       expect(host?.childElementCount).toBe(0)
       expect(keys()).toEqual([WORKSPACE_VIEW, 'entry:task-board', 'panel:插件'])
     } finally {
@@ -349,19 +388,32 @@ describe('mountActivityBar', () => {
     }
   })
 
-  it('React 重渲染把图标条挤掉时自愈回第一位', async () => {
+  it('React 重渲染把图标条挤掉时自愈回 AppFrame', async () => {
     const shell = buildShell()
     const mounted = mount(shell)
     try {
       strip()?.remove()
       await flush()
-      expect(shell.root.firstElementChild).toBe(strip())
+      expect(strip()?.parentElement).toBe(shell.frame)
     } finally {
       mounted.bar.dispose()
     }
   })
 
-  it('销毁后撤掉图标条、视图容器与宽态标记', async () => {
+  it('外壳整棵树重建后重新落位', async () => {
+    const first = buildShell()
+    const mounted = mount(first)
+    try {
+      buildShell()
+      await flush()
+      expect(strip()?.parentElement).not.toBeNull()
+      expect(strip()?.parentElement).toBe(document.querySelector('[class*="frame"]'))
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('销毁后撤掉图标条、视图容器与外壳标记', async () => {
     const shell = buildShell()
     const mounted = mount(shell)
     strip()?.remove()
@@ -369,7 +421,9 @@ describe('mountActivityBar', () => {
     mounted.bar.dispose()
     expect(strip()).toBeNull()
     expect(shell.root.querySelector(`[${VIEW_HOST_ATTRIBUTE}]`)).toBeNull()
-    expect(shell.root.hasAttribute(WIDE_ATTRIBUTE)).toBe(false)
-    expect(shell.root.hasAttribute(VIEW_ATTRIBUTE)).toBe(false)
+    expect(shell.frame.hasAttribute(HOST_ATTRIBUTE)).toBe(false)
+    expect(shell.frame.hasAttribute(WIDE_ATTRIBUTE)).toBe(false)
+    expect(shell.frame.hasAttribute(RAIL_ATTRIBUTE)).toBe(false)
+    expect(shell.frame.hasAttribute(VIEW_ATTRIBUTE)).toBe(false)
   })
 })

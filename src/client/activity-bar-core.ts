@@ -1,20 +1,28 @@
 /**
  * 活动栏引擎（纯 DOM，无 React 树）。
  *
- * 目标形态是 VS Code 的活动栏：侧栏最左一条窄图标列，点图标切换左侧视图。官方侧栏
- * 没有外部插件可注册的槽（`sidebar` 是 single 且被 ui-sidebar 独占，内层席位同样是
- * single），所以这条列是**注入**进去的，与 dsh-web-ui 家族的侧栏行、dsh-interconnect
- * 的设备行同一套做法：只插入自己的节点，绝不移动或包裹 React 拥有的节点；用
- * MutationObserver 自愈，React 重渲染把节点挤掉时在同一帧（绘制前的微任务）补回。
+ * 形态是 VS Code 的活动栏：**左侧一条独立的窄图标列**，侧栏抽屉在它右边，收起抽屉时
+ * 图标列留在原地。官方侧栏没有外部插件可注册的槽（`sidebar` 是 single 且被 ui-sidebar
+ * 独占，内层席位同样是 single），所以这条列是**注入**进去的，与 dsh-web-ui 家族的侧栏
+ * 行、dsh-interconnect 的设备行同一套做法：只插入自己的节点，绝不移动或包裹 React 拥有
+ * 的节点；用 MutationObserver 自愈，React 重渲染把节点挤掉时在同一帧（绘制前的微任务）
+ * 补回。
+ *
+ * 挂在 AppFrame（三个栅格列的共同父节点）上而不是侧栏根里：侧栏列是皮肤的装饰目标
+ * （皮肤按 `[class*='sidebarCol']` 给整列画金边），挂进侧栏根会被算进那圈边框，还会随
+ * 抽屉一起滑走、被列的 `overflow: hidden` 裁掉。挂到栅格上则靠该容器的
+ * `padding-left` 让出左侧一条带：侧栏、会话区、右栏一起右移，外壳自己的栅格解算不用改
+ * 一行，图标列也就成了与抽屉行为无关的独立容器。
  *
  * 图标从哪来：官方 `sidebar.panellist` 行（React 渲染）与插件注入的入口行
  * （`data-dsh-part="sidebar-entry"`）都会被镜像成图标，按文档顺序排列 —— 于是
  * 「设备 / 插件 / 任务看板」那排行原样变成图标列，且以后任何新入口行自动跟上。
  * 点击镜像图标 = 点击原行（`row.click()`），原行的行为与选中态是唯一事实来源。
  *
- * 宽态才有活动栏：侧栏收起成 56px 竖条时，那条竖条本身就是外壳的图标列（官方行与
- * 注入行都还在），此时活动栏隐藏、官方行恢复显示。切换靠侧栏根上的
- * `data-dsh-activity-bar-wide` 属性，纯 CSS 生效。
+ * 收起态：外壳收起侧栏有两种布局 —— 零宽（macOS 桌面与 Windows 标题栏模式，侧栏整列
+ * 消失，没有可见的竖条）与 56px 竖条（普通浏览器里外壳自带的图标列）。零宽时图标条照常
+ * 显示（此时它是唯一的导航），竖条时让位，避免两条并排的图标列；判定见
+ * `collapseKeepsRail`。两种情况都靠 AppFrame 上的标记属性、纯 CSS 生效。
  *
  * 视图：`workspace` 是内建视图（外壳自带的工作区浏览器，默认显示）。其他视图由注册
  * 条目提供 `mountView(container)`，挂载到注入进工作区区域的容器里；此时用
@@ -33,12 +41,16 @@ const ENTRY_ROW_SELECTOR = '[data-dsh-part="sidebar-entry"]'
 /** 工作区浏览区域：自定义视图容器挂在它里面。 */
 const REGION_SELECTOR = '[class*="regionArea"]'
 
-/** 侧栏根上的宽态标记：本属性在时活动栏可见、官方行让位（纯 CSS）。 */
+/** AppFrame 上的挂载标记：本属性在时图标条是它的子节点，CSS 据此让出左侧一条带。 */
+export const HOST_ATTRIBUTE = 'data-dsh-activity-bar-host'
+/** AppFrame 上的宽态标记：侧栏正在显示宽内容（它的入口行已被镜像进图标条）。 */
 export const WIDE_ATTRIBUTE = 'data-dsh-activity-bar-wide'
+/** AppFrame 上的竖条让位标记：收起态由外壳自己的 56px 竖条承担导航，图标条隐藏。 */
+export const RAIL_ATTRIBUTE = 'data-dsh-activity-bar-rail'
+/** AppFrame 上的当前视图标记，值即视图 id；自定义视图激活时它隐藏官方浏览器。 */
+export const VIEW_ATTRIBUTE = 'data-dsh-activity-bar-view'
 /** 图标条自身的标记属性。 */
 export const STRIP_ATTRIBUTE = 'data-dsh-activity-bar'
-/** 侧栏根上的当前视图标记，值即视图 id；自定义视图激活时它隐藏官方浏览器。 */
-export const VIEW_ATTRIBUTE = 'data-dsh-activity-bar-view'
 /** 自定义视图容器的标记属性。 */
 export const VIEW_HOST_ATTRIBUTE = 'data-dsh-activity-bar-view-host'
 /** 每个活动栏按钮上的条目 id。 */
@@ -47,6 +59,8 @@ export const ITEM_ATTRIBUTE = 'data-dsh-activity-bar-item'
 export const WORKSPACE_VIEW = 'workspace'
 /** 注册条目的默认排序位（镜像行占 0..999）。 */
 const DEFAULT_ITEM_ORDER = 1000
+/** 计算样式里的「完全透明」：这时不覆盖图标条自己的底色。 */
+const TRANSPARENT_COLOUR = /^rgba?\(0, 0, 0, 0\)$/
 
 /** 活动栏驱动的外壳布局面（`ctx.layout` 的最小子集）。 */
 export interface ActivityBarLayoutFace {
@@ -113,6 +127,19 @@ function sidebarColumn(): HTMLElement | undefined {
 function sidebarRoot(column: HTMLElement): HTMLElement | undefined {
   const logoOwner = column.querySelector<HTMLElement>('[class*="logoRow"]')?.parentElement
   return logoOwner ?? (column.firstElementChild as HTMLElement | null) ?? undefined
+}
+
+/**
+ * 收起态下外壳是否还自带 56px 竖条。
+ *
+ * 抄的是 AppFrame 的收起宽度规则（`collapsedWidth = darwin || windowsTitlebar ? 0 :
+ * SIDEBAR_COLLAPSED`）：桌面外壳收起时侧栏整列消失，浏览器里则留下一条 56px 竖条，那
+ * 条竖条自己就是图标列。零宽时活动栏必须留下（它是唯一的导航），有竖条时让位。
+ * @returns 收拾起态会留下外壳自己的竖条时为 true。
+ */
+function collapseKeepsRail(): boolean {
+  return !document.documentElement.hasAttribute('data-windows-titlebar')
+    && document.documentElement.dataset['platform'] !== 'darwin'
 }
 
 /** 文档顺序比较器：镜像行按用户看到的顺序排列。 */
@@ -243,22 +270,31 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
     })
   }
 
-  /** 侧栏根上的视图标记：自定义视图激活时隐藏官方浏览器。 */
-  const syncViewAttribute = (): void => {
-    if (root === undefined) return
-    if (view === WORKSPACE_VIEW) root.removeAttribute(VIEW_ATTRIBUTE)
-    else root.setAttribute(VIEW_ATTRIBUTE, view)
+  /**
+   * 把视图标记与宽态写到 AppFrame 上：官方行让位、图标条占位、竖条让位全按这些属性
+   * 生效（见 activity-bar.module.css）。
+   */
+  const syncState = (): void => {
+    if (frame === undefined) return
+    wide = !frame.hasAttribute('data-sidebar-collapsed')
+    frame.toggleAttribute(WIDE_ATTRIBUTE, wide)
+    frame.toggleAttribute(RAIL_ATTRIBUTE, !wide && collapseKeepsRail())
+    if (view === WORKSPACE_VIEW) frame.removeAttribute(VIEW_ATTRIBUTE)
+    else frame.setAttribute(VIEW_ATTRIBUTE, view)
   }
 
-  /** 宽态同步：收起态交给外壳自己的 56px 图标列，活动栏让位。 */
-  const syncWide = (): void => {
-    if (root === undefined) return
-    wide = frame?.hasAttribute('data-sidebar-collapsed') !== true
-    if (wide) root.setAttribute(WIDE_ATTRIBUTE, '')
-    else root.removeAttribute(WIDE_ATTRIBUTE)
+  /**
+   * 图标条底色跟随侧栏列实际画出来的底色：皮肤会把整列重刷成自己的颜色，写死主题
+   * token 会让图标条在皮肤下成为一条突兀的色带。列用渐变或透明时退回 CSS 里的 token。
+   */
+  const paintBackdrop = (): void => {
+    if (column === undefined || !column.isConnected) return
+    const colour = getComputedStyle(column).backgroundColor
+    const next = colour === '' || colour === 'transparent' || TRANSPARENT_COLOUR.test(colour) ? '' : colour
+    if (strip.style.backgroundColor !== next) strip.style.backgroundColor = next
   }
 
-  /** 重画：图标条内容 + 宽态 + 视图标记。 */
+  /** 重画：图标条内容 + 外壳状态标记 + 底色。 */
   const render = (): void => {
     if (disposed || rendering) return
     const current = root
@@ -267,8 +303,8 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
     try {
       const barLabel = options.labels.bar()
       if (strip.getAttribute('aria-label') !== barLabel) strip.setAttribute('aria-label', barLabel)
-      syncWide()
-      syncViewAttribute()
+      syncState()
+      paintBackdrop()
       const entries: RenderEntry[] = [
         {
           key: WORKSPACE_VIEW,
@@ -306,32 +342,34 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
     })
   }
 
-  /** 把图标条与视图容器放回侧栏（React 重渲染后自愈）。 */
-  const place = (sidebarRootElement: HTMLElement): void => {
-    if (strip.parentElement !== sidebarRootElement || sidebarRootElement.firstElementChild !== strip) {
-      sidebarRootElement.insertBefore(strip, sidebarRootElement.firstElementChild)
-    }
-    const host = sidebarRootElement.querySelector<HTMLElement>(REGION_SELECTOR) ?? sidebarRootElement
+  /** 把图标条放进 AppFrame、把视图容器放回工作区区域（React 重渲染后自愈）。 */
+  const place = (): void => {
+    if (frame === undefined || root === undefined) return
+    frame.setAttribute(HOST_ATTRIBUTE, '')
+    if (strip.parentElement !== frame) frame.append(strip)
+    const host = root.querySelector<HTMLElement>(REGION_SELECTOR) ?? root
     if (viewHost.parentElement !== host) host.append(viewHost)
   }
 
-  /** 找到侧栏并落位；外壳尚未渲染时留待观察者。 */
+  /** 找到外壳并落位；外壳尚未渲染时留待观察者。 */
   const tryPlace = (): void => {
     if (disposed) return
-    if (root !== undefined && root.isConnected) {
-      if (!root.contains(strip)) place(root)
+    if (frame !== undefined && frame.isConnected && root !== undefined && root.isConnected
+      && strip.parentElement === frame) {
+      place()
       render()
       return
     }
     column = sidebarColumn()
     if (column === undefined) return
-    const next = sidebarRoot(column)
-    if (next === undefined) return
-    root = next
-    frame = column.parentElement ?? undefined
-    place(root)
+    const nextRoot = sidebarRoot(column)
+    const nextFrame = column.parentElement
+    if (nextRoot === undefined || nextFrame === null) return
+    root = nextRoot
+    frame = nextFrame
+    place()
     frameObserver.disconnect()
-    if (frame !== undefined) frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed'] })
+    frameObserver.observe(frame, { attributes: true, attributeFilter: ['data-sidebar-collapsed'] })
     rootObserver.disconnect()
     rootObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-active', 'aria-current'] })
     render()
@@ -339,16 +377,19 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
 
   /** 切到某个视图：先卸下上一个自定义视图，再挂新的；未知视图 id 保持现状。 */
   const openView = (next: string): void => {
-    if (disposed || next === view) return
-    const item = next === WORKSPACE_VIEW
-      ? undefined
-      : registered.find(candidate => candidate.kind === 'view' && candidate.view === next)
-    if (next !== WORKSPACE_VIEW && item === undefined) return
-    disposeViewMount?.()
-    disposeViewMount = undefined
-    viewHost.replaceChildren()
-    view = next
-    if (item !== undefined) disposeViewMount = item.mountView?.(viewHost)
+    if (disposed) return
+    if (next !== view) {
+      const item = next === WORKSPACE_VIEW
+        ? undefined
+        : registered.find(candidate => candidate.kind === 'view' && candidate.view === next)
+      if (next !== WORKSPACE_VIEW && item === undefined) return
+      disposeViewMount?.()
+      disposeViewMount = undefined
+      viewHost.replaceChildren()
+      view = next
+      if (item !== undefined) disposeViewMount = item.mountView?.(viewHost)
+    }
+    // 自定义视图长在侧栏里，侧栏收起时先把它叫回来（Windows 零宽收起态没有可见的侧栏）。
     if (!wide) options.layout.toggleSidebar()
     render()
   }
@@ -381,19 +422,19 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
   strip.addEventListener('click', onClick)
 
   const rootObserver = new MutationObserver((records) => {
-    if (root === undefined || !root.isConnected) {
+    if (root === undefined || !root.isConnected || frame === undefined || !frame.isConnected) {
       tryPlace()
       return
     }
-    if (!root.contains(strip)) place(root)
+    if (strip.parentElement !== frame) place()
     // 自己写图标条引起的变更不再触发重画：只有外壳/其它插件的改动才需要重画，
     // 否则「重画 → 写 DOM → 观察者 → 重画」会变成微任务空转。
     if (records.some(record => !strip.contains(record.target))) schedule()
   })
   const frameObserver = new MutationObserver(() => { schedule() })
-  // 整棵侧栏被重建时，根观察者随旧树一起消失，只有 body 级观察者能发现新树。
+  // 整棵外壳被重建时，根观察者随旧树一起消失，只有 body 级观察者能发现新树。
   const waitObserver = new MutationObserver(() => {
-    if (root !== undefined && root.isConnected && root.contains(strip)) return
+    if (frame !== undefined && frame.isConnected && strip.parentElement === frame) return
     tryPlace()
   })
   waitObserver.observe(document.body, { childList: true, subtree: true })
@@ -441,8 +482,10 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
       waitObserver.disconnect()
       strip.remove()
       viewHost.remove()
-      root?.removeAttribute(WIDE_ATTRIBUTE)
-      root?.removeAttribute(VIEW_ATTRIBUTE)
+      frame?.removeAttribute(HOST_ATTRIBUTE)
+      frame?.removeAttribute(WIDE_ATTRIBUTE)
+      frame?.removeAttribute(RAIL_ATTRIBUTE)
+      frame?.removeAttribute(VIEW_ATTRIBUTE)
     },
   }
 
