@@ -128,6 +128,15 @@
   justify-content: center;
 }
 
+/* 镜像来的字形带着原行渲染时的尺寸属性：外壳展开态按 16 画、收起态按 18 画，照抄下来
+   会让图标在抽屉开合时忽大忽小。图标条统一按一个尺寸画（CSS 覆盖 SVG 的 width/height
+   表现属性），主题可用 --dsh-activity-bar-icon-size 调整。 */
+.icon > svg {
+  display: block;
+  width: var(--dsh-activity-bar-icon-size, 18px);
+  height: var(--dsh-activity-bar-icon-size, 18px);
+}
+
 /* 自定义视图容器：注入在工作区区域里，只在视图激活时占位。 */
 .viewHost {
   display: none;

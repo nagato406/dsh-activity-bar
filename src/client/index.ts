@@ -18,14 +18,17 @@ import { NS, en, zh, type ActivityBarKey } from './locales.ts'
 import css from './activity-bar.module.css'
 
 // `@deepseek-ai/dsh-client-ui-layout` 只做信息性声明（dsh.client.inject），运行时服务
-// 确实存在：它由官方 ui-layout 提供，与 `slots` 同源。这里只补本插件用到的那一个方法，
-// 不照抄官方品牌类型。
+// 确实存在：它由官方 ui-layout 提供，与 `slots` 同源。这里只补本插件用到的两个方法，
+// 不照抄官方品牌类型。`selectPanel(null)` 把中心栏的主面板选择交还会话视图 —— 图标列
+// 靠它保证「当前页面」只有一块亮着（与 dsh-interconnect 用的是同一个方法）。
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    /** 官方布局服务（本插件只用侧栏开合）。 */
+    /** 官方布局服务（本插件只用侧栏开合与主面板选择）。 */
     layout: {
       /** 收起/展开左侧栏。 */
       toggleSidebar(): void
+      /** 选中某个主面板；传 null 回到会话视图。 */
+      selectPanel(panelId: string | null): void
     }
     /** 本插件提供的活动栏注册表。 */
     activityBar: ActivityBarService

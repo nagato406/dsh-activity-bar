@@ -18,7 +18,10 @@ plugins can register their own icons and left-side views through `ctx.activityBa
   plugin-injected entry rows (`data-dsh-part="sidebar-entry"`, e.g. dsh-interconnect's Devices or
   dsh-task-board's Task board) are *mirrored* into icons — the glyph is a clone of the row's own
   glyph, a click is a click on that row, and the selected state is read from it. Any current or
-  future entry row therefore shows up in the activity bar with no per-plugin work.
+  future entry row therefore shows up in the activity bar with no per-plugin work. A row can match
+  both of the strip's selectors (plugin rows already live inside the panel list, and skins stamp the
+  same `sidebar-entry` attribute onto official rows whose glyph carries `data-dsh-panel-entry`), so
+  rows are deduplicated by element: one entry yields exactly one icon.
 - **Wide drawer only for the rows**: an entry row is mirrored while the sidebar shows its wide
   content, and the row itself gives way to the icon. In browser layouts, where a collapsed sidebar
   keeps the shell's own 56px rail, the strip stands down instead so the two icon columns never sit
@@ -27,10 +30,13 @@ plugins can register their own icons and left-side views through `ctx.activityBa
 - **Views**: `Workspace` is the built-in view (the shell's own workspace/session browser). Other
   views are supplied by registered items; while one is active the official browser is hidden and
   the registrant's content renders in the same region.
-- **Hybrid click semantics**: the `Workspace` icon toggles the left browser (clicking it while
-  active collapses the sidebar, as VS Code does); icons such as `Plugins` / `Task board` /
-  `Devices` open their **centre-column panel** — those pages are unchanged, only their entry
-  moved.
+- **The drawer follows the page**: the `Workspace` icon shows the workspace/session browser in the
+  drawer, and clicking it while that page is already showing collapses the drawer (VS Code's
+  behaviour). Mirrored entry icons such as `Plugins` / `Task board` / `Devices` open their
+  **centre-column panel** and collapse the drawer, since those pages need no sidebar. Registered
+  `view` items open in the drawer and expand it. Exactly one icon is highlighted: the workspace icon
+  steps aside while a centre panel is selected — the strip reads that from the official rows
+  (`aria-current` / `data-active`) and clears it through `ctx.layout.selectPanel(null)`.
 
 ## Install
 
@@ -98,6 +104,13 @@ plugin's own `inject`.
 - The strip follows the colour the sidebar column actually paints (read from its computed
   background), so a skin that floods the column with its own fill does not leave a foreign band next
   to it; a gradient or transparent column falls back to the CSS token.
+- Mirrored glyphs are drawn at one fixed size (`--dsh-activity-bar-icon-size`, 18px). The shell
+  renders a panel glyph at 16px while the sidebar is wide and at 18px on the collapsed rail, and the
+  strip copies the glyph markup as-is; without the CSS size the icons would grow and shrink with the
+  drawer.
+- `ctx.layout.selectPanel(null)` is declared as an optional member of `ActivityBarLayoutFace`: it is
+  what clears the centre panel when a drawer page is selected, and the strip degrades to view
+  switching plus drawer toggling when a shell does not expose it.
 - Applied icons are remembered in a `WeakMap` keyed by the markup written, rather than compared
   through `innerHTML`: re-reading `innerHTML` re-serializes it, so comparing it would rewrite the DOM
   on every render, retrigger the observer, and spin the microtask queue.
@@ -123,5 +136,8 @@ pnpm build      # tsc emits lib/types, tsdown emits lib/index.js and lib/client.
   matters.
 - Official rows are hidden by CSS in the wide state (not unmounted), so their behaviour, selected
   state and accessibility semantics keep exactly one source of truth: the row itself.
+- Mirrored rows are assumed to open a centre-column page, so their click collapses the drawer. A
+  plugin row that instead wants the drawer expanded (a search box, say) would have it closed; such a
+  row should register a `view` item rather than injecting a row.
 - The strip's own bottom is the frame's bottom: a footer control that a future shell version pins to
   the frame's left edge below the strip would overlap it.

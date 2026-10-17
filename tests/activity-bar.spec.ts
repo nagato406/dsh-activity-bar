@@ -72,6 +72,8 @@ function buildShell(options: { collapsed?: boolean } = {}): Shell {
 
   const nav = document.createElement('nav')
   nav.className = '_panelList_hash'
+  // 插件注入行就落在面板列表里（共享 core 的注入点），所以它同时命中两条选择器。
+  nav.append(entryRow)
   const panelRow = document.createElement('button')
   panelRow.className = '_panelRow_hash'
   panelRow.setAttribute('aria-label', '插件')
@@ -87,7 +89,7 @@ function buildShell(options: { collapsed?: boolean } = {}): Shell {
 
   const foot = document.createElement('div')
   foot.className = '_footArea_hash'
-  root.append(logoRow, newSession, entryRow, nav, region, foot)
+  root.append(logoRow, newSession, nav, region, foot)
   slot.append(root)
   column.append(slot)
   frame.append(column)
@@ -100,6 +102,7 @@ interface Mounted {
   bar: ActivityBarHandle
   shell: Shell
   toggleSidebar: ReturnType<typeof vi.fn>
+  selectPanel: ReturnType<typeof vi.fn>
   locale: { notify: () => void }
 }
 
@@ -108,20 +111,21 @@ interface Mounted {
  * @param shell - 目标外壳。
  * @param items - 挂载前预置的注册条目。
  * @param labels - 文案来源；测试可改其闭包变量再触发语言切换。
- * @returns 句柄、外壳与两个探针（侧栏开合、语言切换）。
+ * @returns 句柄、外壳与两个探针（侧栏开合、主面板选择）+ 语言切换。
  */
 function mount(shell: Shell, items: readonly ActivityBarItem[] = [], labels = LABELS): Mounted {
   const listeners = new Set<() => void>()
   const toggleSidebar = vi.fn()
+  const selectPanel = vi.fn()
   const bar = mountActivityBar({
     plugin: 'activity-bar',
     css: CSS,
     labels,
-    layout: { toggleSidebar },
+    layout: { toggleSidebar, selectPanel },
     locale: { subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } } },
   })
   for (const item of items) bar.register(item)
-  return { bar, shell, toggleSidebar, locale: { notify: () => { for (const listener of listeners) listener() } } }
+  return { bar, shell, toggleSidebar, selectPanel, locale: { notify: () => { for (const listener of listeners) listener() } } }
 }
 
 /** 图标条元素。 */
@@ -190,7 +194,7 @@ describe('mountActivityBar', () => {
     second.setAttribute('data-dsh-plugin', 'task-board')
     second.setAttribute('aria-label', '第二行')
     second.innerHTML = '<span class="entryIcon"><svg viewBox="0 0 16 16"><rect width="4" height="4"/></svg></span>'
-    shell.root.insertBefore(second, shell.panelRow.parentElement)
+    shell.entryRow.after(second)
     const mounted = mount(shell)
     try {
       expect(keys()).toEqual([WORKSPACE_VIEW, 'entry:task-board', 'entry:task-board#1', 'panel:插件'])
@@ -221,6 +225,115 @@ describe('mountActivityBar', () => {
       await flush()
       expect(item('panel:插件').hasAttribute('data-active')).toBe(false)
       expect(item('entry:task-board').hasAttribute('data-active')).toBe(false)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('同一个按钮被两条选择器命中时只出一个图标（皮肤给官方面板行盖了 sidebar-entry）', () => {
+    const shell = buildShell()
+    const family = document.createElement('button')
+    family.className = '_panelRow_hash'
+    family.setAttribute('data-dsh-part', 'sidebar-entry')
+    family.setAttribute('aria-label', '任务看板')
+    family.innerHTML = '<span class="panelGlyph"><svg data-dsh-panel-entry="task-board" viewBox="0 0 16 16"><rect width="6" height="6"/></svg></span>'
+    shell.root.querySelector('nav')?.append(family)
+    const mounted = mount(shell)
+    try {
+      expect(keys()).toEqual([WORKSPACE_VIEW, 'entry:task-board', 'panel:插件', 'panel:task-board'])
+      expect(strip()?.querySelectorAll(`[${ITEM_ATTRIBUTE}]`)).toHaveLength(4)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('主面板选中时工作区图标不再高亮（图标列同时只亮一块）', async () => {
+    const shell = buildShell()
+    const mounted = mount(shell)
+    try {
+      expect(item(WORKSPACE_VIEW).getAttribute('data-active')).toBe('true')
+      shell.panelRow.setAttribute('aria-current', 'page')
+      await flush()
+      expect(item('panel:插件').getAttribute('data-active')).toBe('true')
+      expect(item(WORKSPACE_VIEW).hasAttribute('data-active')).toBe(false)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('点镜像图标打开中心栏页面后收起抽屉', () => {
+    const shell = buildShell()
+    const mounted = mount(shell)
+    try {
+      const panelClick = vi.fn()
+      shell.panelRow.addEventListener('click', panelClick)
+      item('panel:插件').click()
+      expect(panelClick).toHaveBeenCalledTimes(1)
+      expect(mounted.toggleSidebar).toHaveBeenCalledTimes(1)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('抽屉已经收着时点镜像图标不再切换', () => {
+    const shell = buildShell({ collapsed: true })
+    const mounted = mount(shell)
+    try {
+      item('panel:插件').click()
+      expect(mounted.toggleSidebar).not.toHaveBeenCalled()
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('从中心栏页面点工作区：交还主面板选择并保持抽屉展开', () => {
+    const shell = buildShell()
+    const mounted = mount(shell)
+    try {
+      shell.panelRow.setAttribute('aria-current', 'page')
+      item(WORKSPACE_VIEW).click()
+      expect(mounted.selectPanel).toHaveBeenCalledWith(null)
+      expect(mounted.toggleSidebar).not.toHaveBeenCalled()
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('从中心栏页面回来但抽屉收着时先展开', () => {
+    const shell = buildShell({ collapsed: true })
+    const mounted = mount(shell)
+    try {
+      shell.panelRow.setAttribute('aria-current', 'page')
+      item(WORKSPACE_VIEW).click()
+      expect(mounted.selectPanel).toHaveBeenCalledWith(null)
+      expect(mounted.toggleSidebar).toHaveBeenCalledTimes(1)
+    } finally {
+      mounted.bar.dispose()
+    }
+  })
+
+  it('从抽屉视图切到中心栏页面：视图先撤下，抽屉收起', async () => {
+    const shell = buildShell()
+    const mounted = mount(shell)
+    const disposeView = vi.fn()
+    try {
+      mounted.bar.register({
+        id: 'remote',
+        label: () => 'WSL',
+        kind: 'view',
+        view: 'remote:wsl',
+        mountView: (container) => { container.append(document.createElement('div')); return disposeView },
+      })
+      item('remote').click()
+      await flush()
+      expect(mounted.bar.activeView()).toBe('remote:wsl')
+      expect(mounted.selectPanel).toHaveBeenCalledWith(null)
+      item('panel:插件').click()
+      await flush()
+      expect(disposeView).toHaveBeenCalledTimes(1)
+      expect(mounted.bar.activeView()).toBe(WORKSPACE_VIEW)
+      expect(shell.frame.hasAttribute(VIEW_ATTRIBUTE)).toBe(false)
+      expect(mounted.toggleSidebar).toHaveBeenCalledTimes(1)
     } finally {
       mounted.bar.dispose()
     }
@@ -269,6 +382,7 @@ describe('mountActivityBar', () => {
       await flush()
       item('devices').click()
       expect(mounted.toggleSidebar).toHaveBeenCalledTimes(1)
+      expect(mounted.selectPanel).toHaveBeenCalledWith(null)
       expect(mounted.bar.activeView()).toBe('remote:alpha')
     } finally {
       mounted.bar.dispose()

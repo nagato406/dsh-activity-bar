@@ -17,7 +17,13 @@
  * 图标从哪来：官方 `sidebar.panellist` 行（React 渲染）与插件注入的入口行
  * （`data-dsh-part="sidebar-entry"`）都会被镜像成图标，按文档顺序排列 —— 于是
  * 「设备 / 插件 / 任务看板」那排行原样变成图标列，且以后任何新入口行自动跟上。
- * 点击镜像图标 = 点击原行（`row.click()`），原行的行为与选中态是唯一事实来源。
+ * 两条选择器会命中同一个按钮（插件行本身就注入在面板列表里；皮肤的语义属性表又给带
+ * 面板字形的官方行盖上 `sidebar-entry`），所以按元素去重，一个入口只出一个图标。
+ *
+ * 抽屉跟着页面走：镜像行打开的是中心栏页面，点完把抽屉收起；注册的 `view` 条目画在
+ * 抽屉里，点开先展开；工作区图标回到抽屉里的浏览器。图标列里只有当前那块亮着 ——
+ * 主面板被选中时工作区图标不再高亮（选中态仍是原行的 `aria-current` / `data-active`，
+ * 镜像只读它）。
  *
  * 收起态：外壳收起侧栏有两种布局 —— 零宽（macOS 桌面与 Windows 标题栏模式，侧栏整列
  * 消失，没有可见的竖条）与 56px 竖条（普通浏览器里外壳自带的图标列）。零宽时图标条照常
@@ -66,6 +72,13 @@ const TRANSPARENT_COLOUR = /^rgba?\(0, 0, 0, 0\)$/
 export interface ActivityBarLayoutFace {
   /** 展开/收起左侧栏。 */
   toggleSidebar(): void
+  /**
+   * 选中某个主面板（中心栏页面）；传 `null` 把主面板选择交还会话视图。
+   *
+   * 省略时不碰主面板选择：活动栏仍能切视图与开合抽屉，只是「当前页面」的复位靠外壳
+   * 自己的行为。
+   */
+  selectPanel?(panelId: string | null): void
 }
 
 /** 活动栏自绘条目的文案。 */
@@ -168,7 +181,6 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
   let root: HTMLElement | undefined
   let column: HTMLElement | undefined
   let frame: HTMLElement | undefined
-  let wide = true
   let disposeViewMount: (() => void) | undefined
   /** 本次渲染出来的条目（key → 条目），点击派发时按 id 查。 */
   const live = new Map<string, RenderEntry>()
@@ -191,17 +203,28 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
     .sort((left, right) => (left.item.order ?? DEFAULT_ITEM_ORDER) - (right.item.order ?? DEFAULT_ITEM_ORDER) || left.index - right.index)
     .map(entry => entry.item)
 
-  /** 镜像一条侧栏入口行：官方行与插件注入行都走这里。 */
-  const mirror = (row: HTMLElement, index: number): RenderEntry => {
-    const injected = row.getAttribute('data-dsh-part') === 'sidebar-entry'
-    const label = row.getAttribute('aria-label') ?? row.textContent?.trim() ?? ''
+  /**
+   * 镜像行在图标列里的稳定 key：插件自己打的 `data-dsh-plugin` 优先，其次是面板字形上
+   * 的 `data-dsh-panel-entry`（官方行没有别的钩子），最后退回文案。
+   */
+  const rowKey = (row: HTMLElement, label: string): string => {
     const plugin = row.getAttribute('data-dsh-plugin')
+    if (plugin !== null) return `entry:${plugin}`
+    const glyph = row.querySelector('[data-dsh-panel-entry]')?.getAttribute('data-dsh-panel-entry')
+    return glyph === undefined || glyph === null || glyph === '' ? `panel:${label}` : `panel:${glyph}`
+  }
+
+  /** 镜像一条侧栏入口行：官方行与插件注入行都走这里。 */
+  const mirror = (row: HTMLElement): RenderEntry => {
+    const label = row.getAttribute('aria-label') ?? row.textContent?.trim() ?? ''
     return {
-      key: injected ? `entry:${plugin ?? index}` : `panel:${label === '' ? String(index) : label}`,
+      key: rowKey(row, label),
       label,
       icon: row.querySelector('svg')?.outerHTML ?? FALLBACK_ICON,
-      active: injected ? row.dataset['active'] === 'true' : row.getAttribute('aria-current') === 'page',
-      activate: () => { row.click() },
+      // 官方行的选中态是 `aria-current="page"`，注入行是 `data-active="true"`；皮肤把
+      // `sidebar-entry` 语义属性盖到官方行上之后两者会同时出现，任一成立即选中。
+      active: row.getAttribute('aria-current') === 'page' || row.dataset['active'] === 'true',
+      activate: () => { activateMirrored(row) },
     }
   }
 
@@ -211,9 +234,13 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
       ...sidebarRootElement.querySelectorAll<HTMLElement>(ENTRY_ROW_SELECTOR),
       ...sidebarRootElement.querySelectorAll<HTMLElement>(PANEL_ROW_SELECTOR),
     ]
+    // 同一个按钮会被两个选择器同时命中：插件行本来就注入在 `nav.panelList` 里，皮肤又给
+    // 带面板字形的官方行盖上了 `data-dsh-part="sidebar-entry"`（skin-center 的语义属性
+    // 表）。按元素去重，一个入口只出一个图标。
+    const unique = [...new Set(rows)].sort(documentOrder)
     const used = new Set<string>()
-    return rows.sort(documentOrder).map((row, index) => {
-      const entry = mirror(row, index)
+    return unique.map((row) => {
+      const entry = mirror(row)
       let key = entry.key
       for (let suffix = 1; used.has(key); suffix++) key = `${entry.key}#${String(suffix)}`
       used.add(key)
@@ -276,7 +303,7 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
    */
   const syncState = (): void => {
     if (frame === undefined) return
-    wide = !frame.hasAttribute('data-sidebar-collapsed')
+    const wide = !frame.hasAttribute('data-sidebar-collapsed')
     frame.toggleAttribute(WIDE_ATTRIBUTE, wide)
     frame.toggleAttribute(RAIL_ATTRIBUTE, !wide && collapseKeepsRail())
     if (view === WORKSPACE_VIEW) frame.removeAttribute(VIEW_ATTRIBUTE)
@@ -310,7 +337,7 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
           key: WORKSPACE_VIEW,
           label: options.labels.workspace(),
           icon: WORKSPACE_ICON,
-          active: view === WORKSPACE_VIEW,
+          active: view === WORKSPACE_VIEW && !panelSelected(),
           activate: activateWorkspace,
         },
         ...mirrors(current),
@@ -375,32 +402,76 @@ export function mountActivityBar(options: ActivityBarOptions): ActivityBarHandle
     render()
   }
 
-  /** 切到某个视图：先卸下上一个自定义视图，再挂新的；未知视图 id 保持现状。 */
+  /** 侧栏当前是否展开（外壳把状态写在 AppFrame 的属性上）。 */
+  const expanded = (): boolean => frame !== undefined && !frame.hasAttribute('data-sidebar-collapsed')
+
+  /** 抽屉展开（已展开则不动）。 */
+  const expand = (): void => { if (!expanded()) options.layout.toggleSidebar() }
+
+  /** 抽屉收起：中心栏页面不需要它。 */
+  const collapse = (): void => { if (expanded()) options.layout.toggleSidebar() }
+
+  /**
+   * 中心栏的主面板是否被选中：官方行给 `aria-current="page"`，插件注入行给
+   * `data-active="true"`。工作区图标的选中态要避开它，否则图标列里会同时亮着两块。
+   */
+  const panelSelected = (): boolean => root !== undefined
+    && root.querySelector('nav[class*="panelList"] [aria-current="page"], nav[class*="panelList"] [data-active="true"]') !== null
+
+  /** 视图 id 是否可切：内建工作区，或已注册的 `kind: 'view'` 条目。 */
+  const knownView = (next: string): boolean => next === WORKSPACE_VIEW
+    || registered.some(candidate => candidate.kind === 'view' && candidate.view === next)
+
+  /** 切到某个视图，只换抽屉内容、不动抽屉开合；未变化时什么都不做。 */
+  const setView = (next: string): void => {
+    if (next === view) return
+    const item = next === WORKSPACE_VIEW
+      ? undefined
+      : registered.find(candidate => candidate.kind === 'view' && candidate.view === next)
+    disposeViewMount?.()
+    disposeViewMount = undefined
+    viewHost.replaceChildren()
+    view = next
+    if (item !== undefined) disposeViewMount = item.mountView?.(viewHost)
+  }
+
+  /**
+   * 切到抽屉里的视图：展开抽屉，并把主面板选择交还出去 —— 中心栏回到会话，图标列里
+   * 只有当前这块亮着。
+   */
   const openView = (next: string): void => {
-    if (disposed) return
-    if (next !== view) {
-      const item = next === WORKSPACE_VIEW
-        ? undefined
-        : registered.find(candidate => candidate.kind === 'view' && candidate.view === next)
-      if (next !== WORKSPACE_VIEW && item === undefined) return
-      disposeViewMount?.()
-      disposeViewMount = undefined
-      viewHost.replaceChildren()
-      view = next
-      if (item !== undefined) disposeViewMount = item.mountView?.(viewHost)
-    }
-    // 自定义视图长在侧栏里，侧栏收起时先把它叫回来（Windows 零宽收起态没有可见的侧栏）。
-    if (!wide) options.layout.toggleSidebar()
+    if (disposed || !knownView(next)) return
+    setView(next)
+    options.layout.selectPanel?.(null)
+    expand()
     render()
   }
 
-  /** 工作区图标：已在该视图时按 VS Code 的语义收起侧栏。 */
+  /**
+   * 工作区图标：抽屉里的工作区浏览器。
+   *
+   * 从中心栏页面（插件/设备/任务看板…）回来时交还主面板选择并展开抽屉；从别的抽屉
+   * 视图回来时换回浏览器；已经在工作区时按 VS Code 的语义收起抽屉。
+   */
   const activateWorkspace = (): void => {
-    if (view !== WORKSPACE_VIEW) {
-      openView(WORKSPACE_VIEW)
-      return
-    }
-    options.layout.toggleSidebar()
+    const fromPanel = panelSelected()
+    const fromView = view !== WORKSPACE_VIEW
+    options.layout.selectPanel?.(null)
+    setView(WORKSPACE_VIEW)
+    if (!expanded()) expand()
+    else if (!fromPanel && !fromView) options.layout.toggleSidebar()
+    render()
+  }
+
+  /**
+   * 镜像图标：点击原行（行为与选中态的唯一事实来源），再收起抽屉 —— 原行打开的是中心栏
+   * 页面，抽屉留着只会挡住内容。先撤下抽屉里的自定义视图，避免两块同时亮。
+   */
+  const activateMirrored = (row: HTMLElement): void => {
+    setView(WORKSPACE_VIEW)
+    row.click()
+    collapse()
+    render()
   }
 
   /** 注册条目的点击：视图条目切视图，动作条目执行动作。 */
